@@ -27,7 +27,7 @@ def validate(arg, types=None, choices=None, regex=None, name=None):
         raise ValueError('Specified arg, \'{}\', was not in allowed choices: {}'.format(arg, choices))
 
 
-class _BaseArg(object):
+class Arg(object):
     """"""
 
     def __init__(self,
@@ -43,7 +43,8 @@ class _BaseArg(object):
             type: The type or tuple of types to expect. `None` results in no type checking.
             choices: Iterable of allowed values.
             length: The length or tuple of lengths to expect to expect. `None` results in no length checking.
-            regex: A regex pattern to validate the input with. A ValueError is raised if no match is found `None` results in no regex matching.
+            regex: A regex pattern to validate the input with. A ValueError is raised if no match is found `None`
+                results in no regex matching.
             func: A callable function or tuple of callable functions that takes in one parameter (the function input).
                 This function is expected to return True if the input is valid and False otherwise. `None` results in
                 no validation by function.
@@ -61,49 +62,19 @@ class _BaseArg(object):
         # TODO Ensure input is string for regex
 
 
-class Arg(_BaseArg):
-    """"""
-
-    def __init__(self,
-                 *args,
-                 index=None,
-                 **kwargs):
-        """
-
-        Args:
-            index: Index or tuple of indices of args to check.
-        """
-        self._index = index
-        super(Arg, self).__init__(*args, **kwargs)
-
-
-class Kwarg(_BaseArg):
-    """"""
-
-    def __init__(self,
-                 name,
-                 *args,
-                 **kwargs):
-        """
-
-        Args:
-            name: Name or tuple of names
-        """
-        self._name = name
-        super(Kwarg, self).__init__(*args, **kwargs)
-
-
-def req(*args, **kwargs):
+def req(*args):
     """
     @req(
-        Arg(),
-        Arg(),
-        Kwarg()
+        (3, Arg()),
+        ((1, 2), Arg()),
+        (ARGS, Arg()),  # Rest of *args
+        ('test', Arg()),
+        (('spec', 'num_trees'), Arg()),
+        (KWARGS, Arg())  # Rest of **kwargs, must be last kwarg specified to req
     )
 
     Args:
         *args:
-        **kwargs:
 
     Returns:
 
@@ -115,13 +86,78 @@ def req(*args, **kwargs):
         @wraps(func)
         def func_wrapper(*func_args, **func_kwargs):
             """"""
-            # Validate arguments
-            for arg_value in args:
-                validate(arg_value, **kwargs)  # TODO kwargs is a lie
-            # Validate kwargs
-            for kwarg_name, kwarg_params in six.iteritems(kwargs):
-                kwarg_value = func_kwargs[kwarg_name]
-                validate(, ** )
-                return func_wrapper
+            # Handled (visited) args
+            visited_args = set()
+            # Handled (visited) kwargs
+            visited_kwargs = set()
+            # Number of function args, used to obtain actual index from negative indices
+            num_func_args = len(func_args)
+            # Placeholder for ARGS to be handled last
+            args_special_case = None
+            # Placeholder for KWARGS to be handled last
+            kwargs_special_case = None
+
+            def _validate_arg(_index_or_name, arg_instance):
+                """"""
+                # Establish var scope
+                global args_special_case, kwargs_special_case
+                # Check ARGS/KWARGS special cases
+                if _index_or_name is ARGS:
+                    if args_special_case is not None:
+                        raise ValueError('`ARGS` specified multiple times in input.')
+                    args_special_case = arg_instance
+                    # Break function; ARGS handled at end
+                    return
+                elif _index_or_name is KWARGS:
+                    if kwargs_special_case is not None:
+                        raise ValueError('`KWARGS` specified multiple times in input.')
+                    kwargs_special_case = arg_instance
+                    # Break function; KWARGS handled at end
+                    return
+                # Not ARGS/KWARGS special cases: continue
+                if isinstance(_index_or_name, six.string_types):  # Name (kwarg)
+                    # Ensure name hasn't been handled
+                    if _index_or_name in visited_kwargs:
+                        raise ValueError(
+                            'Specified kwarg was already handled by another `Arg` instance: {}'.format(index_or_name))
+                    # Store name
+                    visited_kwargs.add(_index_or_name)
+                    # Validate kwarg
+                    arg_instance.validate(func_args[index_or_name])
+                else:  # Assume `index_or_name` is int index (arg)
+                    # Store index as positive/actual value
+                    if _index_or_name < 0:
+                        _index_or_name += num_func_args
+                    # Ensure index hasn't been handled
+                    if _index_or_name in visited_kwargs:
+                        raise ValueError(
+                            'Specified arg was already handled by another `Arg` instance: {}'.format(index_or_name))
+                    # Store index
+                    visited_args.add(index_or_name)
+                    # Validate arg
+                    arg_instance.validate(func_kwargs[index_or_name])
+
+            # Loop through args to validate
+            for indices_or_names, arg in args:
+                # TODO validate (bass class method?)
+                if isinstance(indices_or_names, tuple):
+                    for index_or_name in indices_or_names:
+                        _validate_arg(index_or_name, arg)
+                else:
+                    _validate_arg(indices_or_names, arg)
+
+            # Check for special cases and handle them
+            if args_special_case is not None:  # ARGS special case
+                # Find remaining args
+                remaining_args = set(range(num_func_args)) - visited_args
+                # Validate remaining args
+                for index_to_validate in remaining_args:
+                    _validate_arg(index_to_validate, args_special_case)
+            if kwargs_special_case is not None:  # KWARGS special case
+                # Find remaining kwargs
+                remaining_kwargs = set(func_kwargs) - visited_kwargs
+                # Validate remaining kwargs
+                for name_to_validate in remaining_kwargs:
+                    _validate_arg(name_to_validate, kwargs_special_case)
 
             return validate_decorator
