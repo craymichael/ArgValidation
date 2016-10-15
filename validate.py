@@ -14,13 +14,20 @@ import six  # TODO(Docs and Pip?) Required package
 import re
 from functools import wraps
 
+
 # Special case constants
-ARGS
-KWARGS
+class ARGS:
+    """Constant to indicate a *arg special case for validation."""
+    pass
+
+
+class KWARGS:
+    """Constant to indicate a **kwarg special case for validation."""
+    pass
 
 
 class Arg(object):  # TODO(Docs) include blurb about extending this class
-    """"""
+    """Validation argument container."""
 
     def __init__(self,
                  types=None,
@@ -48,6 +55,7 @@ class Arg(object):  # TODO(Docs) include blurb about extending this class
                         'types': 'The specified type was not expected.'
                         'length': 'The provided length was not long enough.'
                     }
+                See `validate` for information of possible `err_msg` keys and associated exceptions.
         """
         # Store validation parameters
         self._types = types
@@ -60,7 +68,24 @@ class Arg(object):  # TODO(Docs) include blurb about extending this class
         self._err_msg_is_dict = isinstance(self._err_msg, dict)
 
     def validate(self, arg, name=None, index=None):
-        """"""
+        """Validates an argument using specified params to `__init__`.
+        
+        Args:
+            arg: The argument value to validate
+            name: The name of a kwarg
+            index: The index of an arg
+
+        Raises:
+            TypeError:
+                'types': Arg wasn't an instance of any `types` if specified.
+            ValueError:
+                'choices': Arg wasn't in `choices` if specified.
+                'length': Arg wasn't an allowed `length` if specified.
+                'regex': Arg didn't match regex if specified.
+                'func': `func` returned False when arg passed to it if `func` specified.
+            AttributeError:
+                'no_length': Arg doesn't have `__len__` attribute if `length` specified.
+        """
         arg_format = 'kwarg `{}`'.format(name) if name else 'arg at index {}'.format(index)
         # Validate arg type
         if self._types is not None:
@@ -78,22 +103,27 @@ class Arg(object):  # TODO(Docs) include blurb about extending this class
             # Ensure arg has `__len__` attribute
             if not hasattr(arg, '__len__'):
                 raise AttributeError(
-                    self._get_err_msg('length') or
+                    self._get_err_msg('no_length') or
                     'Specified {} is required to have a length (`__len__` attribute).'.format(arg_format))
 
-            def check_length(_length):
-                """Validates length of arg with specified `_length`."""
-                if len(arg) != _length:
-                    raise ValueError(self._get_err_msg('length') or  # TODO WHY ARE THESE "SELF"S NOT FUCKING PURPLE
-                                     'Specified {} is required to have length of {}.'.format(arg_format, self._length))
+            # Calculate arg length
+            arg_length = len(arg)
+
+            def _raise_bad_length():
+                """Raises ValueError for bad length."""
+                raise ValueError(self._get_err_msg('length') or  # TODO WHY ARE THESE "SELF"S NOT FUCKING PURPLE
+                                 'Specified {} with length {} is required to have length of {}.'.format(arg_format,
+                                                                                                        arg_length,
+                                                                                                        self._length))
 
             if isinstance(self._length, tuple):
                 # Check multiple lengths
-                for length in self._length:
-                    check_length(length)
+                if arg_length not in self._length:
+                    _raise_bad_length()
             else:
                 # Check single length
-                check_length(self._length)
+                if arg_length != self._length:
+                    _raise_bad_length()
 
         if self._regex is not None:
             # Match regex
@@ -102,7 +132,7 @@ class Arg(object):  # TODO(Docs) include blurb about extending this class
                                  'Specified {} did not match the following regex: {}'.format(arg_format, self._regex))
 
         if self._func is not None:
-            def eval_func(_func):
+            def _eval_func(_func):
                 """Evaluates a callable function. Raises ValueError is function returns False."""
                 func_output = _func(arg)
                 if func_output is False:
@@ -112,10 +142,10 @@ class Arg(object):  # TODO(Docs) include blurb about extending this class
             if isinstance(self._func, tuple):
                 # Evaluate multiple functions
                 for func in self._func:
-                    eval_func(func)
+                    _eval_func(func)
             else:
                 # Evaluate single function
-                eval_func(self._func)
+                _eval_func(self._func)
 
     def _get_err_msg(self, err_name):
         """Returns the error message specified if exists. If `self._err_msg` is a dict, the error message
@@ -135,30 +165,63 @@ class Arg(object):  # TODO(Docs) include blurb about extending this class
 
 
 def req(*args):
-    """
-    @req(
-        (3, Arg()),  # Single index
-        ((1, 2), Arg()),  # Multiple indices
-        (ARGS, Arg()),  # Rest of *args (ARGS special case)
-        ((4, 'slug'), Arg()),  # Mix kwargs and args. Also, order of arg input doesn't matter
-        ('test', Arg()),  # Single name
-        (('spec', 'num_trees'), Arg()),  # Multiple names
-        (KWARGS, Arg())  # Rest of **kwargs (KWARGS special case)
-    )
+    """Decorator for any function to validate its arguments seamlessly.
 
     Args:
-        *args:
+        *args: Tuples of indices and/or names in position 0 and `Arg` instances in position 1. For docs on
+            specifications for `Arg`, view the `Arg` class.
 
-    Returns:
+    Examples:
+        Below, Arg() is used for all `Arg` instances. To specify what to validate, view the possible specifications
+        to the `Arg` class.
 
+        Some basic usage:
+            @req(
+                (3, Arg()),                     # Validate a single index
+                ((1, 2), Arg()),                # Validate multiple indices
+                (ARGS, Arg()),                  # Validate the rest of func *args (ARGS special case)
+                ((4, 'slug'), Arg()),           # Validate a mixture of kwargs and args.
+                ('test', Arg()),                # Validate a single name
+                (('spec', 'index'), Arg()),     # Validate multiple names
+                (KWARGS, Arg())                 # Validate the rest of func **kwargs (KWARGS special case)
+            )
+        These specifications also work:
+            @req(
+                ((-1, -2), Arg())               # Validate the last and second to last indices of *args
+                ((2, 4, ARGS), Arg()),          # Validate indices 2 and 4, and remaining *args
+                (('test', KWARGS), Arg())       # Validate name 'test' and remaining **kwargs
+            )
+            @req(
+                ((2, 'test', ARGS), Arg()),     # Validate index 2, name 'test' and remaining *args
+                (('pid', 2, 1, KWARGS), Arg())  # Validate name 'pid', indices 2 and 1, and remaining **kwargs
+            )
+        These specifications don't work:
+            @req(
+                (2, Arg()),                     # Validate index 2
+                ((1, 2, 3), Arg())              # ValueError raised due to index 2 being validated prior
+            )
+            @req(
+                ((2, -1), Arg())                # This fails if *args has length 3 (arg[2] == arg[-1])
+            )
+
+    NOTE: The order of args/kwargs/special cases doesn't matter; the order of validation is as follows:
+        1. Specified indices and kwargs in the order they appear to `req`
+        2. ARGS special case
+        3. KWARGS special case
+
+    Raises:
+        ValueError: ARGS or KWARGS specified more than once, or an index or name specified more than once.
+        Others: See the `validate` function doc under the class `Arg` for exceptions raised due to invalid user
+            specification.
     """
 
-    def validate_decorator(func):
-        """"""
+    def validation_decorator(func):
+        """Decorator for a function `func` which validates provided arguments according to the
+        specifications of `req`."""
 
         @wraps(func)
         def func_wrapper(*func_args, **func_kwargs):
-            """"""
+            """Wrapper for a function. Uses all provided args and kwargs."""
             # Handled (visited) args
             visited_args = set()
             # Handled (visited) kwargs
@@ -170,22 +233,23 @@ def req(*args):
             # Placeholder for KWARGS to be handled last
             kwargs_special_case = None
 
-            def _validate_arg(_index_or_name, arg_instance):
-                """"""
+            def _validate_arg(_index_or_name, _arg_instance):
+                """Validates an arg or kwarg using `_arg_instance` (Arg instance). `_index_or_name` should be
+                `int` or `str`."""
                 # Define var scope
                 global args_special_case, kwargs_special_case
                 # Check ARGS/KWARGS special cases
                 if _index_or_name is ARGS:
                     if args_special_case is not None:
                         raise ValueError('`ARGS` specified multiple times in input.')
-                    args_special_case = arg_instance
-                    # Break function; ARGS handled at end
+                    args_special_case = _arg_instance
+                    # Break function; ARGS special case handled at end
                     return
                 elif _index_or_name is KWARGS:
                     if kwargs_special_case is not None:
                         raise ValueError('`KWARGS` specified multiple times in input.')
-                    kwargs_special_case = arg_instance
-                    # Break function; KWARGS handled at end
+                    kwargs_special_case = _arg_instance
+                    # Break function; KWARGS special case handled at end
                     return
                 # Not ARGS/KWARGS special cases: continue
                 if isinstance(_index_or_name, six.string_types):  # Name (kwarg)
@@ -196,7 +260,7 @@ def req(*args):
                     # Store name
                     visited_kwargs.add(_index_or_name)
                     # Validate kwarg
-                    arg_instance.validate(func_args[_index_or_name], index=_index_or_name)
+                    _arg_instance.validate(func_args[_index_or_name], index=_index_or_name)
                 else:  # Assume `_index_or_name` is int index (arg)
                     # Store index as positive/actual value
                     if _index_or_name < 0:
@@ -208,7 +272,7 @@ def req(*args):
                     # Store index
                     visited_args.add(_index_or_name)
                     # Validate arg
-                    arg_instance.validate(func_kwargs[_index_or_name], name=_index_or_name)
+                    _arg_instance.validate(func_kwargs[_index_or_name], name=_index_or_name)
 
             # Loop through args to validate
             for indices_or_names, arg in args:
@@ -231,5 +295,9 @@ def req(*args):
                 # Validate remaining kwargs
                 for name_to_validate in remaining_kwargs:
                     _validate_arg(name_to_validate, kwargs_special_case)
+
+            # Return wrapper
             return func_wrapper
-        return validate_decorator
+
+        # Return decorator
+        return validation_decorator
